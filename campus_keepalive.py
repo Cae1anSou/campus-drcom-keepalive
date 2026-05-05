@@ -25,6 +25,43 @@ DEFAULT_BASE_URL = "http://10.1.60.100"
 DEFAULT_JS_VERSION = "4.2.1"
 
 
+def _strip_inline_comment(value: str) -> str:
+    quote: str | None = None
+    for index, char in enumerate(value):
+        if char in ("'", '"'):
+            quote = char if quote is None else None if quote == char else quote
+        elif char == "#" and quote is None and (index == 0 or value[index - 1].isspace()):
+            return value[:index].rstrip()
+    return value.strip()
+
+
+def _unquote(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def load_env_file(path: str, override: bool = False) -> dict[str, str]:
+    loaded: dict[str, str] = {}
+    if not path or not os.path.exists(path):
+        return loaded
+
+    with open(path, "r", encoding="utf-8") as fp:
+        for line in fp:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = _unquote(_strip_inline_comment(value.strip()))
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+                continue
+            loaded[key] = value
+            if override or key not in os.environ:
+                os.environ[key] = value
+    return loaded
+
+
 def parse_jsonp(text: str) -> dict[str, Any]:
     match = re.search(r"^[^(]*\((.*)\)\s*;?\s*$", text.strip(), re.S)
     if not match:
@@ -108,7 +145,8 @@ def _log(message: str) -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Dr.COM campus network keepalive")
+    parser = argparse.ArgumentParser(description="Dr.COM campus network auto connect and keepalive")
+    parser.add_argument("--env-file", default=os.getenv("CAMPUS_ENV_FILE", ".env"))
     parser.add_argument("--base-url", default=os.getenv("CAMPUS_BASE_URL", DEFAULT_BASE_URL))
     parser.add_argument("--username", default=os.getenv("CAMPUS_USERNAME"))
     parser.add_argument("--password", default=os.getenv("CAMPUS_PASSWORD"))
@@ -124,6 +162,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--env-file", default=os.getenv("CAMPUS_ENV_FILE", ".env"))
+    pre_args, _ = pre_parser.parse_known_args(argv)
+    load_env_file(pre_args.env_file)
+
     args = _build_parser().parse_args(argv)
     if not args.username or not args.password:
         print(

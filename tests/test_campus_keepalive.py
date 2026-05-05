@@ -1,4 +1,6 @@
 import json
+import os
+import tempfile
 import unittest
 from urllib.parse import parse_qs, urlparse
 
@@ -83,6 +85,42 @@ class CampusKeepaliveTests(unittest.TestCase):
         self.assertEqual(result["action"], "login")
         self.assertEqual(result["login"]["result"], 1)
         self.assertEqual(len(opener.urls), 2)
+
+    def test_load_env_file_ignores_comments_and_preserves_existing_env(self):
+        with tempfile.NamedTemporaryFile("w", delete=False) as fp:
+            fp.write("# comment\n")
+            fp.write("CAMPUS_USERNAME=test-user\n")
+            fp.write("CAMPUS_PASSWORD='secret value'\n")
+            fp.write("CAMPUS_INTERVAL=30 # inline comment\n")
+            path = fp.name
+
+        old_username = os.environ.get("CAMPUS_USERNAME")
+        old_password = os.environ.get("CAMPUS_PASSWORD")
+        old_interval = os.environ.get("CAMPUS_INTERVAL")
+        try:
+            os.environ["CAMPUS_USERNAME"] = "already-set"
+            os.environ.pop("CAMPUS_PASSWORD", None)
+            os.environ.pop("CAMPUS_INTERVAL", None)
+
+            loaded = ck.load_env_file(path)
+
+            self.assertEqual(loaded["CAMPUS_USERNAME"], "test-user")
+            self.assertEqual(loaded["CAMPUS_PASSWORD"], "secret value")
+            self.assertEqual(loaded["CAMPUS_INTERVAL"], "30")
+            self.assertEqual(os.environ["CAMPUS_USERNAME"], "already-set")
+            self.assertEqual(os.environ["CAMPUS_PASSWORD"], "secret value")
+            self.assertEqual(os.environ["CAMPUS_INTERVAL"], "30")
+        finally:
+            os.unlink(path)
+            for key, old_value in [
+                ("CAMPUS_USERNAME", old_username),
+                ("CAMPUS_PASSWORD", old_password),
+                ("CAMPUS_INTERVAL", old_interval),
+            ]:
+                if old_value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = old_value
 
 
 if __name__ == "__main__":

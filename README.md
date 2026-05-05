@@ -1,29 +1,46 @@
-# 浙江财经大学东方学院 Dr.COM 校园网保活脚本
+# 浙江财经大学东方学院校园网自动连接与保活脚本
 
-这是一个用于浙江财经大学东方学院校园网认证网关的 Dr.COM 保活/自动重连脚本。
+这是一个面向浙江财经大学东方学院 Dr.COM 校园网认证网关的自动化连接脚本。
 
-适用场景：服务器已经接入校园网，但一段时间后 Dr.COM Web 认证会掉线，
-导致服务器无法继续访问外网。脚本会周期性检查当前登录状态；如果仍在线，
-只输出状态，不做任何操作；如果检测到离线，才会用配置的账号密码调用登录
-接口重新认证。
+脚本会周期性访问校园网认证网关，判断当前设备是否仍处于在线状态。如果在线，
+脚本只输出状态；如果掉线，脚本会自动调用登录接口重新认证。它适合部署在服务器、
+实验室主机、树莓派、NAS 等需要长期保持网络连通的设备上。
 
-默认网关地址是 `http://10.1.60.100`。
-
-## Reversed Endpoints
-
-- Status: `GET http://10.1.60.100/drcom/chkstatus`
-- Login: `GET http://10.1.60.100/drcom/login`
-- Response format: JSONP, for example `dr1002({...})`
-- Current page bundle: `a41.js` loads `a40.js`; `a40.js` calls `/drcom/login`
-  when `login_method == 0`.
-- The older `/eportal/?c=ACSetting&a=Login` values are still present in page
-  variables, but the active code path for this gateway is `/drcom/login`.
-
-Login parameters used by the frontend:
+默认网关地址：
 
 ```text
-DDDDD=<username>
-upass=<password>
+http://10.1.60.100
+```
+
+## 功能
+
+- 自动检测 Dr.COM 校园网登录状态
+- 掉线后自动重新登录
+- 支持普通校园用户、电信、联通等账号后缀
+- 支持环境变量、`.env` 文件和命令行参数
+- 无第三方依赖，只需要 Python 3
+- 适合配合 systemd 在服务器上长期运行
+
+## 工作原理
+
+当前网关页面使用 Dr.COM Web 认证。根据前端请求流程整理后，核心接口如下：
+
+| 用途 | 接口 |
+| --- | --- |
+| 查询在线状态 | `GET http://10.1.60.100/drcom/chkstatus` |
+| 登录认证 | `GET http://10.1.60.100/drcom/login` |
+
+接口返回 JSONP，例如：
+
+```text
+dr1002({"result":1,"uid":"..."});
+```
+
+登录参数与前端页面保持一致：
+
+```text
+DDDDD=<账号>
+upass=<密码>
 0MKKey=123456
 R1=
 R2=
@@ -34,57 +51,145 @@ v6ip=
 terminal_type=1
 ```
 
-The script checks `/drcom/chkstatus` first. It only calls `/drcom/login` when
-the status response is not online for the configured account.
+脚本不会主动注销，也不会在已经在线时重复登录。运行流程是：
 
-## Run Once
+1. 调用 `/drcom/chkstatus` 查询状态。
+2. 如果 `result=1` 且账号匹配，认为当前在线。
+3. 如果离线，调用 `/drcom/login` 重新登录。
+4. 按配置间隔继续下一轮检测。
+
+## 快速开始
+
+克隆仓库后进入目录：
 
 ```bash
-export CAMPUS_USERNAME='<your student id>'
-export CAMPUS_PASSWORD='<your password>'
+git clone https://github.com/Cae1anSou/campus-drcom-keepalive.git
+cd campus-drcom-keepalive
+```
+
+复制示例配置：
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env`：
+
+```dotenv
+CAMPUS_USERNAME=<你的学号或账号>
+CAMPUS_PASSWORD=<你的密码>
+CAMPUS_SERVICE=
+CAMPUS_INTERVAL=60
+```
+
+运行一次检测：
+
+```bash
 python3 campus_keepalive.py --once
 ```
 
-## Run Continuously
+长期运行：
 
 ```bash
-export CAMPUS_USERNAME='<your student id>'
-export CAMPUS_PASSWORD='<your password>'
-export CAMPUS_INTERVAL=60
 python3 campus_keepalive.py
 ```
 
-For carrier-specific accounts, set `CAMPUS_SERVICE`, for example `@dx` or
-`@lt`. Leave it empty for the normal campus user option.
+## 配置项
 
-## systemd Example
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `CAMPUS_BASE_URL` | `http://10.1.60.100` | 校园网认证网关地址 |
+| `CAMPUS_USERNAME` | 空 | 校园网账号 |
+| `CAMPUS_PASSWORD` | 空 | 校园网密码 |
+| `CAMPUS_SERVICE` | 空 | 运营商后缀，普通校园用户留空 |
+| `CAMPUS_INTERVAL` | `60` | 检测间隔，单位秒 |
+| `CAMPUS_TIMEOUT` | `10` | 单次请求超时，单位秒 |
+| `CAMPUS_ENV_FILE` | `.env` | 配置文件路径 |
 
-Create `/etc/systemd/system/campus-keepalive.service` on the server:
+运营商后缀示例：
 
-```ini
-[Unit]
-Description=Campus Dr.COM keepalive
-After=network-online.target
-Wants=network-online.target
+| 类型 | `CAMPUS_SERVICE` |
+| --- | --- |
+| 校园用户 | 留空 |
+| 校园电信 | `@dx` |
+| 校园联通 | `@lt` |
 
-[Service]
-Type=simple
-Environment=CAMPUS_USERNAME=<your student id>
-Environment=CAMPUS_PASSWORD=<your password>
-Environment=CAMPUS_INTERVAL=60
-WorkingDirectory=/path/to/this/directory
-ExecStart=/usr/bin/python3 /path/to/this/directory/campus_keepalive.py
-Restart=always
-RestartSec=10
+## 命令行参数
 
-[Install]
-WantedBy=multi-user.target
+环境变量和 `.env` 之外，也可以直接传参数：
+
+```bash
+python3 campus_keepalive.py \
+  --username '<你的账号>' \
+  --password '<你的密码>' \
+  --interval 60
 ```
 
-Then enable it:
+指定配置文件：
+
+```bash
+python3 campus_keepalive.py --env-file /etc/campus-keepalive.env
+```
+
+只检测一次：
+
+```bash
+python3 campus_keepalive.py --once
+```
+
+## systemd 部署
+
+仓库提供了示例服务文件：
+
+```text
+deploy/campus-keepalive.service.example
+```
+
+推荐把真实账号密码放在 `/etc/campus-keepalive.env`：
+
+```dotenv
+CAMPUS_USERNAME=<你的学号或账号>
+CAMPUS_PASSWORD=<你的密码>
+CAMPUS_SERVICE=
+CAMPUS_INTERVAL=60
+```
+
+复制服务文件：
+
+```bash
+sudo cp deploy/campus-keepalive.service.example /etc/systemd/system/campus-keepalive.service
+```
+
+编辑其中的 `WorkingDirectory` 和 `ExecStart`，改成你的仓库路径。然后启用：
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now campus-keepalive.service
 sudo journalctl -u campus-keepalive.service -f
 ```
+
+## 测试
+
+运行单元测试：
+
+```bash
+python3 -m unittest tests/test_campus_keepalive.py
+```
+
+语法检查：
+
+```bash
+python3 -m py_compile campus_keepalive.py tests/test_campus_keepalive.py
+```
+
+## 安全说明
+
+- 不要把真实密码提交到 GitHub。
+- `.env` 已被 `.gitignore` 忽略，公开仓库只保留 `.env.example`。
+- 该脚本只面向你自己有权使用的校园网账号和设备。
+- 脚本不会尝试攻击、绕过或破坏认证系统，只做状态检测和掉线重连。
+
+## 适用范围
+
+这个仓库目前针对浙江财经大学东方学院的 `10.1.60.100` Dr.COM 网关整理和测试。
+其他学校即使也使用 Dr.COM，接口路径和参数也可能不同，需要重新确认。
