@@ -86,14 +86,12 @@ class DrcomClient:
             self.opener = build_opener()
 
     def _get_jsonp(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        query: dict[str, Any] = {
-            "callback": _callback(),
-            "jsVersion": self.js_version,
-            "v": random.randint(500, 10499),
-            "lang": "zh",
-        }
+        query: dict[str, Any] = {"callback": _callback()}
         if params:
             query.update(params)
+        query["jsVersion"] = self.js_version
+        query["v"] = random.randint(500, 10499)
+        query["lang"] = "zh"
         url = f"{self.base_url}{path}?{urlencode(query)}"
         with self.opener.open(url, timeout=self.timeout) as response:
             raw = response.read().decode("utf-8", errors="replace")

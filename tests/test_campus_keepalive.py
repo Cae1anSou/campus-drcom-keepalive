@@ -62,6 +62,17 @@ class CampusKeepaliveTests(unittest.TestCase):
         self.assertEqual(params["0MKKey"], ["123456"])
         self.assertEqual(params["terminal_type"], ["1"])
 
+    def test_login_places_credentials_before_trailing_common_params(self):
+        opener = FakeOpener(['dr1003({"result":1,"uid":"test-user"});'])
+        client = ck.DrcomClient("http://10.1.60.100", opener=opener)
+
+        client.login("test-user", "secret")
+
+        query_keys = [part.split("=", 1)[0] for part in urlparse(opener.urls[0]).query.split("&")]
+        self.assertLess(query_keys.index("DDDDD"), query_keys.index("jsVersion"))
+        self.assertLess(query_keys.index("upass"), query_keys.index("jsVersion"))
+        self.assertLess(query_keys.index("terminal_type"), query_keys.index("jsVersion"))
+
     def test_ensure_online_skips_login_when_already_online(self):
         opener = FakeOpener(['dr1002({"result":1,"uid":"test-user"});'])
         client = ck.DrcomClient("http://10.1.60.100", opener=opener)
