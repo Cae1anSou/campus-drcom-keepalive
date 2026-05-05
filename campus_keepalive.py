@@ -132,11 +132,21 @@ def ensure_online(
     password: str,
     service: str = "",
 ) -> dict[str, Any]:
-    status = client.status()
-    if client.is_online(status, username):
-        return {"action": "already_online", "status": status}
+    status_error = ""
+    try:
+        status = client.status()
+    except ValueError as exc:
+        status = {"result": 0}
+        status_error = str(exc)
+    else:
+        if client.is_online(status, username):
+            return {"action": "already_online", "status": status}
+
     login_result = client.login(username, password, service)
-    return {"action": "login", "status": status, "login": login_result}
+    result = {"action": "login", "status": status, "login": login_result}
+    if status_error:
+        result["status_error"] = status_error
+    return result
 
 
 def _log(message: str) -> None:

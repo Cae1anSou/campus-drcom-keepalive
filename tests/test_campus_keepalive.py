@@ -86,6 +86,22 @@ class CampusKeepaliveTests(unittest.TestCase):
         self.assertEqual(result["login"]["result"], 1)
         self.assertEqual(len(opener.urls), 2)
 
+    def test_ensure_online_logs_in_when_status_returns_html_error(self):
+        opener = FakeOpener(
+            [
+                "<html><body>\r\nError code: 203 Bad request(2)\r\n</body></html>",
+                'dr1003({"result":1,"uid":"test-user"});',
+            ]
+        )
+        client = ck.DrcomClient("http://10.1.60.100", opener=opener)
+
+        result = ck.ensure_online(client, "test-user", "secret")
+
+        self.assertEqual(result["action"], "login")
+        self.assertIn("not a JSONP response", result["status_error"])
+        self.assertEqual(result["login"]["result"], 1)
+        self.assertEqual(len(opener.urls), 2)
+
     def test_load_env_file_ignores_comments_and_preserves_existing_env(self):
         with tempfile.NamedTemporaryFile("w", delete=False) as fp:
             fp.write("# comment\n")

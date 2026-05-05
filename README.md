@@ -182,6 +182,28 @@ python3 -m unittest tests/test_campus_keepalive.py
 python3 -m py_compile campus_keepalive.py tests/test_campus_keepalive.py
 ```
 
+## 常见问题
+
+### `Error code: 203 Bad request(2)`
+
+如果断网后运行脚本，状态接口有时会返回 HTML 错误页，而不是正常的 JSONP：
+
+```text
+<html><body>
+Error code: 203 Bad request(2)
+</body></html>
+```
+
+这通常表示当前设备已经不在认证在线状态，网关没有按正常在线状态接口返回数据。
+脚本会把这种状态查询异常当作“离线”处理，并继续尝试调用登录接口。
+
+如果登录接口也持续返回 203，请确认：
+
+- 当前设备仍连接在校园网内，而不是切到了其他网络
+- `.env` 中的账号和密码正确
+- `CAMPUS_SERVICE` 是否需要填写 `@dx` 或 `@lt`
+- 网关地址是否仍是 `http://10.1.60.100`
+
 ## 安全说明
 
 - 不要把真实密码提交到 GitHub。
