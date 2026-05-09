@@ -314,7 +314,7 @@ pub fn ensure_online(
 
     let login = client.login(username, password, service)?;
     if status_error.is_some() {
-        // Keep behavior close to the Python version: status errors trigger login, but are not fatal.
+        // Status errors usually mean the portal no longer considers this host online.
     }
     Ok(EnsureResult {
         action: EnsureAction::Login,
