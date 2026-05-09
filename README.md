@@ -2,8 +2,8 @@
 
 这是一个面向浙江财经大学东方学院 Dr.COM 校园网认证网关的自动化连接脚本。
 
-脚本会周期性访问校园网认证网关，判断当前设备是否仍处于在线状态。如果在线，
-脚本只输出状态；如果掉线，脚本会自动调用登录接口重新认证。它适合部署在服务器、
+程序会周期性访问校园网认证网关，判断当前设备是否仍处于在线状态。如果在线，
+程序只输出状态；如果掉线，程序会自动调用登录接口重新认证。它适合部署在服务器、
 实验室主机、树莓派、NAS 等需要长期保持网络连通的设备上。
 
 默认网关地址：
@@ -23,7 +23,7 @@ http://10.1.60.100
 - 支持绑定源 IP 或网卡，便于有线和 Wi-Fi 分别认证
 - 支持普通校园用户、电信、联通等账号后缀
 - 支持环境变量、`.env` 文件和命令行参数
-- 无第三方依赖，只需要 Python 3
+- Rust 单文件二进制，支持 macOS、Linux、Windows
 - 适合配合 systemd 在服务器上长期运行
 
 ## 工作原理
@@ -56,7 +56,7 @@ v6ip=
 terminal_type=1
 ```
 
-脚本不会主动注销，也不会在已经在线时重复登录。运行流程是：
+程序不会主动注销，也不会在已经在线时重复登录。运行流程是：
 
 1. 先尝试 `CAMPUS_BASE_URL` 的 `/drcom/chkstatus` 和 `/drcom/login`。
 2. 如果失败，读取网关缓存并重试。
@@ -64,7 +64,7 @@ terminal_type=1
 4. 成功后缓存这次可用网关，后续优先复用。
 5. 按配置间隔继续下一轮检测。
 
-如果设置了 `CAMPUS_SOURCE_IP` 或 `CAMPUS_INTERFACE`，脚本会让所有 HTTP 请求都从
+如果设置了 `CAMPUS_SOURCE_IP` 或 `CAMPUS_INTERFACE`，程序会让所有 HTTP 请求都从
 指定地址发出。这适合有线和 Wi-Fi 需要分别认证的场景。
 
 ## 快速开始
@@ -98,13 +98,20 @@ CAMPUS_INTERFACE=
 运行一次检测：
 
 ```bash
-python3 campus_keepalive.py --once
+cargo run -- --once
 ```
 
 长期运行：
 
 ```bash
-python3 campus_keepalive.py
+cargo run --
+```
+
+构建发布版：
+
+```bash
+cargo build --release
+./target/release/campus-drcom-keepalive --once
 ```
 
 ## 配置项
@@ -136,7 +143,7 @@ python3 campus_keepalive.py
 环境变量和 `.env` 之外，也可以直接传参数：
 
 ```bash
-python3 campus_keepalive.py \
+campus-drcom-keepalive \
   --username '<你的账号>' \
   --password '<你的密码>' \
   --interval 60
@@ -145,34 +152,34 @@ python3 campus_keepalive.py \
 指定配置文件：
 
 ```bash
-python3 campus_keepalive.py --env-file /etc/campus-keepalive.env
+campus-drcom-keepalive --env-file /etc/campus-keepalive.env
 ```
 
 绑定到指定源地址：
 
 ```bash
-python3 campus_keepalive.py --source-ip 10.3.20.57 --once
+campus-drcom-keepalive --source-ip 10.3.20.57 --once
 ```
 
 绑定到指定网卡（Linux）：
 
 ```bash
-python3 campus_keepalive.py --interface enp7s0 --once
-python3 campus_keepalive.py --interface wlp0s20f3 --once
+campus-drcom-keepalive --interface enp7s0 --once
+campus-drcom-keepalive --interface wlp0s20f3 --once
 ```
 
-`--source-ip` 更利于跨平台；`--interface` 当前依赖 Linux 的 `ip` 命令。
+`--source-ip` 是跨平台主路径；`--interface` 使用系统网卡列表解析 IPv4 地址，适用于 macOS、Linux、Windows。
 
 禁用网关自动探测（只使用你给定的网关）：
 
 ```bash
-python3 campus_keepalive.py --no-auto-discover-gateway
+campus-drcom-keepalive --no-auto-discover-gateway
 ```
 
 只检测一次：
 
 ```bash
-python3 campus_keepalive.py --once
+campus-drcom-keepalive --once
 ```
 
 ## systemd 部署
@@ -196,6 +203,7 @@ CAMPUS_INTERVAL=60
 复制服务文件：
 
 ```bash
+sudo install -m 755 target/release/campus-drcom-keepalive /usr/local/bin/campus-drcom-keepalive
 sudo cp deploy/campus-keepalive.service.example /etc/systemd/system/campus-keepalive.service
 ```
 
@@ -233,24 +241,25 @@ CAMPUS_BASE_URL=http://10.99.253.230
 CAMPUS_BASE_URL=http://10.1.60.100
 ```
 
-## 跨平台计划
+## 跨平台
 
-目前继续使用 Python。这个项目的主要风险在网关探测、认证状态和系统部署，不在语言性能。
-先用 Python 保持协议逻辑清楚、测试容易写；Windows 支持优先通过 `--source-ip` 接入。
-等 Windows 侧稳定后，如果确实需要单文件分发或后台服务安装体验，再评估 Go 或 Rust。
+Rust 版本面向 macOS、Linux、Windows。默认只使用 HTTP，因为当前 Dr.COM 认证入口就是 HTTP；
+这样可以减少跨平台构建对 OpenSSL 或额外 C 编译器的依赖。如果后续需要 HTTPS 探测，可以再加
+可选 TLS feature。
 
 ## 测试
 
 运行单元测试：
 
 ```bash
-python3 -m unittest tests/test_campus_keepalive.py
+cargo test
 ```
 
-语法检查：
+跨平台检查：
 
 ```bash
-python3 -m py_compile campus_keepalive.py tests/test_campus_keepalive.py
+cargo check --target x86_64-unknown-linux-gnu
+cargo check --target x86_64-pc-windows-msvc
 ```
 
 ## 常见问题

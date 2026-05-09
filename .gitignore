@@ -2,3 +2,8 @@ __pycache__/
 *.py[cod]
 .DS_Store
 .env
+
+
+# Added by cargo
+
+/target
