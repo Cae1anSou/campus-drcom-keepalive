@@ -44,7 +44,33 @@ Windows 解压 zip 后，在 PowerShell 中运行：
 
 ## 配置
 
-创建 `.env`：
+账号和密码不需要编译进程序。预编译二进制会在运行时读取配置，支持三种方式：
+
+1. 命令行参数：适合临时测试，但密码会留在 shell 历史里，不建议长期使用。
+2. 环境变量：适合脚本和容器。
+3. `.env` 文件或 `--env-file` 指定的配置文件：推荐用于日常使用和 systemd 部署。
+
+配置读取优先级：
+
+```text
+命令行参数 > 环境变量 > 配置文件 > 默认值
+```
+
+从 Release 下载的压缩包里包含 `.env.example`。解压后复制一份：
+
+Linux/macOS：
+
+```bash
+cp .env.example .env
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+然后编辑 `.env`：
 
 ```dotenv
 CAMPUS_USERNAME=<你的学号或账号>
@@ -57,6 +83,30 @@ CAMPUS_PROBE_URL=http://example.com/
 CAMPUS_GATEWAY_CACHE_FILE=.campus_gateway_cache
 CAMPUS_SOURCE_IP=
 CAMPUS_INTERFACE=
+```
+
+也可以不用 `.env`，直接通过环境变量提供：
+
+Linux/macOS：
+
+```bash
+export CAMPUS_USERNAME='<你的学号或账号>'
+export CAMPUS_PASSWORD='<你的密码>'
+campus-drcom-keepalive --once
+```
+
+Windows PowerShell：
+
+```powershell
+$env:CAMPUS_USERNAME = '<你的学号或账号>'
+$env:CAMPUS_PASSWORD = '<你的密码>'
+.\campus-drcom-keepalive.exe --once
+```
+
+临时测试也可以直接传参数：
+
+```bash
+campus-drcom-keepalive --username '<你的学号或账号>' --password '<你的密码>' --once
 ```
 
 运营商后缀：
