@@ -8,18 +8,21 @@ offline. Credentials are read from environment variables or CLI flags.
 from __future__ import annotations
 
 import argparse
+import http.client
 import ipaddress
 import json
 import os
 import random
 import re
+import socket
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse, urlencode
-from urllib.request import build_opener
+from urllib.request import HTTPHandler, HTTPSHandler, build_opener
 
 
 DEFAULT_BASE_URL = "http://10.1.60.100"
@@ -76,6 +79,76 @@ def _callback() -> str:
     return f"dr{random.randint(1000, 9999)}"
 
 
+class SourceBoundHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args: Any, source_ip: str, **kwargs: Any) -> None:
+        super().__init__(*args, source_address=(source_ip, 0), **kwargs)
+
+
+class SourceBoundHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args: Any, source_ip: str, **kwargs: Any) -> None:
+        super().__init__(*args, source_address=(source_ip, 0), **kwargs)
+
+
+class SourceBoundHTTPHandler(HTTPHandler):
+    def __init__(self, source_ip: str) -> None:
+        super().__init__()
+        self.source_ip = source_ip
+
+    def http_open(self, req: Any) -> Any:
+        return self.do_open(
+            lambda host, timeout=socket._GLOBAL_DEFAULT_TIMEOUT: SourceBoundHTTPConnection(
+                host,
+                timeout=timeout,
+                source_ip=self.source_ip,
+            ),
+            req,
+        )
+
+
+class SourceBoundHTTPSHandler(HTTPSHandler):
+    def __init__(self, source_ip: str) -> None:
+        super().__init__()
+        self.source_ip = source_ip
+
+    def https_open(self, req: Any) -> Any:
+        return self.do_open(
+            lambda host, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, **kwargs: SourceBoundHTTPSConnection(
+                host,
+                timeout=timeout,
+                source_ip=self.source_ip,
+                **kwargs,
+            ),
+            req,
+        )
+
+
+def build_source_bound_opener(source_ip: str) -> Any:
+    return build_opener(SourceBoundHTTPHandler(source_ip), SourceBoundHTTPSHandler(source_ip))
+
+
+def interface_ipv4_address(interface: str) -> str:
+    command = ["ip", "-4", "-o", "addr", "show", "dev", interface]
+    try:
+        output = subprocess.check_output(command, text=True, stderr=subprocess.DEVNULL)
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(f"cannot resolve IPv4 address for interface {interface!r}") from exc
+
+    match = re.search(r"\binet\s+([0-9]{1,3}(?:\.[0-9]{1,3}){3})/", output)
+    if not match:
+        raise RuntimeError(f"interface {interface!r} has no IPv4 address")
+    return match.group(1)
+
+
+def resolve_source_ip(source_ip: str | None = None, interface: str | None = None) -> str | None:
+    if source_ip and interface:
+        raise ValueError("use either source_ip or interface, not both")
+    if source_ip:
+        return source_ip
+    if interface:
+        return interface_ipv4_address(interface)
+    return None
+
+
 def _normalize_base_url(base_url: str) -> str:
     return base_url.strip().rstrip("/")
 
@@ -118,10 +191,11 @@ def _gateway_from_portal_html(html: str) -> str | None:
 def discover_gateway_base_url(
     probe_url: str = DEFAULT_PROBE_URL,
     timeout: int = 10,
+    source_ip: str | None = None,
     opener: Any | None = None,
 ) -> str | None:
     if opener is None:
-        opener = build_opener()
+        opener = build_source_bound_opener(source_ip) if source_ip else build_opener()
 
     try:
         with opener.open(probe_url, timeout=timeout) as response:
@@ -169,12 +243,13 @@ class DrcomClient:
     base_url: str = DEFAULT_BASE_URL
     timeout: int = 10
     js_version: str = DEFAULT_JS_VERSION
+    source_ip: str | None = None
     opener: Any | None = None
 
     def __post_init__(self) -> None:
         self.base_url = self.base_url.rstrip("/")
         if self.opener is None:
-            self.opener = build_opener()
+            self.opener = build_source_bound_opener(self.source_ip) if self.source_ip else build_opener()
 
     def _get_jsonp(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         query: dict[str, Any] = {"callback": _callback()}
@@ -253,10 +328,11 @@ def _build_gateway_candidates(
     auto_discover_gateway: bool,
     probe_url: str,
     timeout: int,
+    source_ip: str | None = None,
 ) -> list[str]:
     candidates = [_normalize_base_url(base_url)]
     cached = load_cached_gateway(cache_file)
-    discovered = discover_gateway_base_url(probe_url, timeout=timeout) if auto_discover_gateway else None
+    discovered = discover_gateway_base_url(probe_url, timeout=timeout, source_ip=source_ip) if auto_discover_gateway else None
     for candidate in (cached, discovered):
         if candidate:
             normalized = _normalize_base_url(candidate)
@@ -274,12 +350,13 @@ def ensure_online_with_fallback(
     cache_file: str = DEFAULT_GATEWAY_CACHE_FILE,
     auto_discover_gateway: bool = True,
     probe_url: str = DEFAULT_PROBE_URL,
+    source_ip: str | None = None,
 ) -> dict[str, Any]:
-    candidates = _build_gateway_candidates(base_url, cache_file, auto_discover_gateway, probe_url, timeout)
+    candidates = _build_gateway_candidates(base_url, cache_file, auto_discover_gateway, probe_url, timeout, source_ip)
     errors: list[str] = []
 
     for candidate in candidates:
-        client = DrcomClient(candidate, timeout=timeout)
+        client = DrcomClient(candidate, timeout=timeout, source_ip=source_ip)
         try:
             result = ensure_online(client, username, password, service)
         except Exception as exc:
@@ -328,6 +405,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="cache file for last successful gateway base URL",
     )
     parser.add_argument(
+        "--source-ip",
+        default=os.getenv("CAMPUS_SOURCE_IP"),
+        help="bind HTTP requests to this local IPv4 address",
+    )
+    parser.add_argument(
+        "--interface",
+        default=os.getenv("CAMPUS_INTERFACE"),
+        help="bind HTTP requests to this network interface by using its IPv4 address",
+    )
+    parser.add_argument(
         "--no-auto-discover-gateway",
         action="store_true",
         help="disable gateway discovery fallback",
@@ -349,6 +436,11 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    try:
+        source_ip = resolve_source_ip(args.source_ip, args.interface)
+    except Exception as exc:
+        print(f"invalid network binding: {exc}", file=sys.stderr)
+        return 2
 
     while True:
         try:
@@ -361,6 +453,7 @@ def main(argv: list[str] | None = None) -> int:
                 cache_file=args.gateway_cache_file,
                 auto_discover_gateway=not args.no_auto_discover_gateway,
                 probe_url=args.probe_url,
+                source_ip=source_ip,
             )
             gateway = result.get("base_url", args.base_url)
             if result["action"] == "already_online":

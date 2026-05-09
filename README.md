@@ -20,6 +20,7 @@ http://10.1.60.100
 - 掉线后自动重新登录
 - 支持网关自动探测和网关回退
 - 自动缓存最近一次可用网关
+- 支持绑定源 IP 或网卡，便于有线和 Wi-Fi 分别认证
 - 支持普通校园用户、电信、联通等账号后缀
 - 支持环境变量、`.env` 文件和命令行参数
 - 无第三方依赖，只需要 Python 3
@@ -63,6 +64,9 @@ terminal_type=1
 4. 成功后缓存这次可用网关，后续优先复用。
 5. 按配置间隔继续下一轮检测。
 
+如果设置了 `CAMPUS_SOURCE_IP` 或 `CAMPUS_INTERFACE`，脚本会让所有 HTTP 请求都从
+指定地址发出。这适合有线和 Wi-Fi 需要分别认证的场景。
+
 ## 快速开始
 
 克隆仓库后进入目录：
@@ -87,6 +91,8 @@ CAMPUS_SERVICE=
 CAMPUS_INTERVAL=60
 CAMPUS_PROBE_URL=http://example.com/
 CAMPUS_GATEWAY_CACHE_FILE=.campus_gateway_cache
+CAMPUS_SOURCE_IP=
+CAMPUS_INTERFACE=
 ```
 
 运行一次检测：
@@ -108,6 +114,8 @@ python3 campus_keepalive.py
 | `CAMPUS_BASE_URL` | `http://10.1.60.100` | 校园网认证网关地址 |
 | `CAMPUS_PROBE_URL` | `http://example.com/` | 自动探测网关时访问的探测地址 |
 | `CAMPUS_GATEWAY_CACHE_FILE` | `.campus_gateway_cache` | 最近一次可用网关缓存文件 |
+| `CAMPUS_SOURCE_IP` | 空 | 绑定请求使用的本机 IPv4 地址 |
+| `CAMPUS_INTERFACE` | 空 | 绑定请求使用的网卡名，例如 `enp7s0` |
 | `CAMPUS_USERNAME` | 空 | 校园网账号 |
 | `CAMPUS_PASSWORD` | 空 | 校园网密码 |
 | `CAMPUS_SERVICE` | 空 | 运营商后缀，普通校园用户留空 |
@@ -140,6 +148,21 @@ python3 campus_keepalive.py \
 python3 campus_keepalive.py --env-file /etc/campus-keepalive.env
 ```
 
+绑定到指定源地址：
+
+```bash
+python3 campus_keepalive.py --source-ip 10.3.20.57 --once
+```
+
+绑定到指定网卡（Linux）：
+
+```bash
+python3 campus_keepalive.py --interface enp7s0 --once
+python3 campus_keepalive.py --interface wlp0s20f3 --once
+```
+
+`--source-ip` 更利于跨平台；`--interface` 当前依赖 Linux 的 `ip` 命令。
+
 禁用网关自动探测（只使用你给定的网关）：
 
 ```bash
@@ -158,6 +181,7 @@ python3 campus_keepalive.py --once
 
 ```text
 deploy/campus-keepalive.service.example
+deploy/campus-keepalive@.service.example
 ```
 
 推荐把真实账号密码放在 `/etc/campus-keepalive.env`：
@@ -182,6 +206,24 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now campus-keepalive.service
 sudo journalctl -u campus-keepalive.service -f
 ```
+
+如果要分别保活有线和 Wi-Fi，可以使用模板服务：
+
+```bash
+sudo cp deploy/campus-keepalive@.service.example /etc/systemd/system/campus-keepalive@.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now campus-keepalive@enp7s0.service
+sudo systemctl enable --now campus-keepalive@wlp0s20f3.service
+sudo journalctl -u 'campus-keepalive@*.service' -f
+```
+
+模板服务会按网卡名分别写网关缓存，避免两条链路互相覆盖缓存。
+
+## 跨平台计划
+
+目前继续使用 Python。这个项目的主要风险在网关探测、认证状态和系统部署，不在语言性能。
+先用 Python 保持协议逻辑清楚、测试容易写；Windows 支持优先通过 `--source-ip` 接入。
+等 Windows 侧稳定后，如果确实需要单文件分发或后台服务安装体验，再评估 Go 或 Rust。
 
 ## 测试
 

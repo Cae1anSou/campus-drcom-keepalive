@@ -1,0 +1,15 @@
+[Unit]
+Description=Campus Dr.COM auto connect and keepalive on %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/campus-keepalive.env
+WorkingDirectory=/path/to/campus-drcom-keepalive
+ExecStart=/usr/bin/python3 /path/to/campus-drcom-keepalive/campus_keepalive.py --env-file /etc/campus-keepalive.env --interface %i --gateway-cache-file /var/lib/campus-keepalive/%i.gateway
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -221,6 +221,63 @@ class CampusKeepaliveTests(unittest.TestCase):
         finally:
             os.unlink(cache_path)
 
+    def test_ensure_online_with_fallback_passes_source_ip_to_client(self):
+        created = []
+
+        class RecordingClient:
+            def __init__(self, base_url, timeout=10, source_ip=None):
+                self.base_url = base_url
+                self.timeout = timeout
+                self.source_ip = source_ip
+                created.append(self)
+
+        with tempfile.NamedTemporaryFile("w", delete=False) as fp:
+            cache_path = fp.name
+        try:
+            with mock.patch.object(ck, "_build_gateway_candidates", return_value=["http://10.99.253.230"]):
+                with mock.patch.object(ck, "DrcomClient", RecordingClient):
+                    with mock.patch.object(ck, "save_cached_gateway"):
+                        with mock.patch.object(
+                            ck,
+                            "ensure_online",
+                            return_value={"action": "already_online", "status": {"result": 1, "uid": "test-user"}},
+                        ):
+                            result = ck.ensure_online_with_fallback(
+                                base_url="http://10.1.60.100",
+                                username="test-user",
+                                password="secret",
+                                timeout=5,
+                                cache_file=cache_path,
+                                auto_discover_gateway=False,
+                                source_ip="10.3.20.57",
+                            )
+
+            self.assertEqual(result["base_url"], "http://10.99.253.230")
+            self.assertEqual(created[0].source_ip, "10.3.20.57")
+        finally:
+            os.unlink(cache_path)
+
+    def test_parser_accepts_source_ip_and_interface_from_environment(self):
+        old_source_ip = os.environ.get("CAMPUS_SOURCE_IP")
+        old_interface = os.environ.get("CAMPUS_INTERFACE")
+        try:
+            os.environ["CAMPUS_SOURCE_IP"] = "10.3.20.57"
+            os.environ["CAMPUS_INTERFACE"] = "enp7s0"
+
+            args = ck._build_parser().parse_args([])
+
+            self.assertEqual(args.source_ip, "10.3.20.57")
+            self.assertEqual(args.interface, "enp7s0")
+        finally:
+            for key, old_value in [
+                ("CAMPUS_SOURCE_IP", old_source_ip),
+                ("CAMPUS_INTERFACE", old_interface),
+            ]:
+                if old_value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = old_value
+
 
 if __name__ == "__main__":
     unittest.main()
