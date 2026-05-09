@@ -21,6 +21,7 @@ http://10.1.60.100
 - 支持网关自动探测和网关回退
 - 自动缓存最近一次可用网关
 - 支持绑定源 IP 或网卡，便于有线和 Wi-Fi 分别认证
+- 可选的多网卡主备路由守护进程（独立组件，默认不启用）
 - 支持普通校园用户、电信、联通等账号后缀
 - 支持环境变量、`.env` 文件和命令行参数
 - 无第三方依赖，只需要 Python 3
@@ -260,6 +261,41 @@ CAMPUS_ENSURE_POLICY_ROUTING=true
 CAMPUS_BASE_URL=http://10.1.60.100
 CAMPUS_ENSURE_POLICY_ROUTING=true
 ```
+
+## 可选：多网卡主备路由管理
+
+如果你有多网卡场景（例如希望“有线可用时优先有线，不可用时切到 Wi-Fi”），可以额外启用
+`network_path_manager.py`。它是独立组件，不影响 `campus_keepalive.py`。
+
+相关文件：
+
+```text
+network_path_manager.py
+deploy/network-path-manager.service.example
+deploy/network-path-manager.env.example
+```
+
+配置示例：
+
+```bash
+sudo cp deploy/network-path-manager.service.example /etc/systemd/system/network-path-manager.service
+sudo cp deploy/network-path-manager.env.example /etc/network-path-manager.env
+```
+
+根据你的机器改 `/etc/network-path-manager.env`，然后启用：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now network-path-manager.service
+sudo journalctl -u network-path-manager.service -f
+```
+
+说明：
+
+- `NPM_PREFERRED_INTERFACE`：首选网卡（例如 `enp7s0`）
+- `NPM_BACKUP_INTERFACE`：备用网卡（例如 `wlp0s20f3`）
+- `NPM_PROBE_TARGETS`：探测目标，逗号分隔。可配网关、DNS 或业务地址
+- `NPM_FAIL_THRESHOLD` / `NPM_RECOVER_THRESHOLD`：防抖阈值，避免频繁切换
 
 ## 跨平台计划
 

@@ -1,0 +1,15 @@
+[Unit]
+Description=Preferred interface failover route manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/network-path-manager.env
+WorkingDirectory=/path/to/campus-drcom-keepalive
+ExecStart=/usr/bin/python3 /path/to/campus-drcom-keepalive/network_path_manager.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
