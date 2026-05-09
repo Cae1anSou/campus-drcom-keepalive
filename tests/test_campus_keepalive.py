@@ -2,17 +2,22 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
 import campus_keepalive as ck
 
 
 class FakeResponse:
-    def __init__(self, text):
+    def __init__(self, text, url="http://example.com/"):
         self._text = text.encode("utf-8")
+        self._url = url
 
-    def read(self):
+    def read(self, *_args):
         return self._text
+
+    def geturl(self):
+        return self._url
 
     def __enter__(self):
         return self
@@ -30,7 +35,10 @@ class FakeOpener:
         self.urls.append(url)
         if not self.responses:
             raise AssertionError("no fake response left")
-        return FakeResponse(self.responses.pop(0))
+        current = self.responses.pop(0)
+        if isinstance(current, FakeResponse):
+            return current
+        return FakeResponse(current)
 
 
 class CampusKeepaliveTests(unittest.TestCase):
@@ -148,6 +156,70 @@ class CampusKeepaliveTests(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = old_value
+
+    def test_discover_gateway_base_url_from_redirected_final_url(self):
+        opener = FakeOpener(
+            [
+                FakeResponse(
+                    "<html>portal</html>",
+                    url="http://10.99.253.230/chkuser?url=example.com/",
+                )
+            ]
+        )
+        discovered = ck.discover_gateway_base_url("http://example.com/", opener=opener)
+        self.assertEqual(discovered, "http://10.99.253.230")
+
+    def test_discover_gateway_base_url_from_portal_html(self):
+        opener = FakeOpener(
+            [
+                FakeResponse(
+                    "v4serip='10.1.60.100'; v46ip='10.3.20.57';",
+                    url="http://example.com/",
+                )
+            ]
+        )
+        discovered = ck.discover_gateway_base_url("http://example.com/", opener=opener)
+        self.assertEqual(discovered, "http://10.1.60.100")
+
+    def test_gateway_cache_roundtrip(self):
+        with tempfile.NamedTemporaryFile("w", delete=False) as fp:
+            path = fp.name
+        try:
+            ck.save_cached_gateway(path, "http://10.99.253.230/")
+            cached = ck.load_cached_gateway(path)
+            self.assertEqual(cached, "http://10.99.253.230")
+        finally:
+            os.unlink(path)
+
+    def test_ensure_online_with_fallback_tries_next_gateway(self):
+        with tempfile.NamedTemporaryFile("w", delete=False) as fp:
+            cache_path = fp.name
+        try:
+            with mock.patch.object(
+                ck,
+                "_build_gateway_candidates",
+                return_value=["http://10.1.60.100", "http://10.99.253.230"],
+            ):
+                with mock.patch.object(ck, "save_cached_gateway"):
+                    def fake_ensure_online(client, username, password, service):
+                        if client.base_url == "http://10.1.60.100":
+                            return {"action": "login", "login": {"result": 0, "msg": "bad gateway"}, "status": {"result": 0}}
+                        return {"action": "already_online", "status": {"result": 1, "uid": username}}
+
+                    with mock.patch.object(ck, "ensure_online", side_effect=fake_ensure_online):
+                        result = ck.ensure_online_with_fallback(
+                            base_url="http://10.1.60.100",
+                            username="test-user",
+                            password="secret",
+                            timeout=5,
+                            cache_file=cache_path,
+                            auto_discover_gateway=False,
+                        )
+
+            self.assertEqual(result["base_url"], "http://10.99.253.230")
+            self.assertEqual(result["attempted_base_urls"], ["http://10.1.60.100", "http://10.99.253.230"])
+        finally:
+            os.unlink(cache_path)
 
 
 if __name__ == "__main__":

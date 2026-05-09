@@ -8,6 +8,7 @@ offline. Credentials are read from environment variables or CLI flags.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import random
@@ -17,12 +18,14 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlparse, urlencode
 from urllib.request import build_opener
 
 
 DEFAULT_BASE_URL = "http://10.1.60.100"
 DEFAULT_JS_VERSION = "4.2.1"
+DEFAULT_PROBE_URL = "http://example.com/"
+DEFAULT_GATEWAY_CACHE_FILE = ".campus_gateway_cache"
 
 
 def _strip_inline_comment(value: str) -> str:
@@ -71,6 +74,94 @@ def parse_jsonp(text: str) -> dict[str, Any]:
 
 def _callback() -> str:
     return f"dr{random.randint(1000, 9999)}"
+
+
+def _normalize_base_url(base_url: str) -> str:
+    return base_url.strip().rstrip("/")
+
+
+def _is_private_ip(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_private
+    except ValueError:
+        return False
+
+
+def _base_url_from_candidate_url(candidate_url: str, probe_url: str) -> str | None:
+    parsed = urlparse(candidate_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+
+    probe_host = urlparse(probe_url).hostname or ""
+    host = parsed.hostname or ""
+    lower_path = parsed.path.lower()
+    has_portal_hint = "drcom" in lower_path or "chkuser" in lower_path or "drcom" in parsed.query.lower()
+
+    if host and host != probe_host and (_is_private_ip(host) or has_portal_hint):
+        return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    return None
+
+
+def _gateway_from_portal_html(html: str) -> str | None:
+    patterns = [
+        r"v4serip=['\"]([0-9]{1,3}(?:\.[0-9]{1,3}){3})['\"]",
+        r"v46ip=['\"]([0-9]{1,3}(?:\.[0-9]{1,3}){3})['\"]",
+        r"http://([0-9]{1,3}(?:\.[0-9]{1,3}){3})/chkuser",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html, re.I)
+        if match and _is_private_ip(match.group(1)):
+            return f"http://{match.group(1)}"
+    return None
+
+
+def discover_gateway_base_url(
+    probe_url: str = DEFAULT_PROBE_URL,
+    timeout: int = 10,
+    opener: Any | None = None,
+) -> str | None:
+    if opener is None:
+        opener = build_opener()
+
+    try:
+        with opener.open(probe_url, timeout=timeout) as response:
+            final_url = response.geturl()
+            html = response.read(8192).decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+    by_url = _base_url_from_candidate_url(final_url, probe_url)
+    if by_url:
+        return by_url
+    return _gateway_from_portal_html(html)
+
+
+def load_cached_gateway(path: str) -> str | None:
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fp:
+            cached = fp.read().strip()
+    except OSError:
+        return None
+
+    if not cached:
+        return None
+    parsed = urlparse(cached)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    return _normalize_base_url(cached)
+
+
+def save_cached_gateway(path: str, base_url: str) -> None:
+    if not path:
+        return
+    normalized = _normalize_base_url(base_url)
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fp:
+        fp.write(normalized + "\n")
 
 
 @dataclass
@@ -147,6 +238,67 @@ def ensure_online(
     return result
 
 
+def _login_succeeded(result: dict[str, Any]) -> bool:
+    if result.get("action") == "already_online":
+        return True
+    if result.get("action") != "login":
+        return False
+    login_result = result.get("login", {})
+    return str(login_result.get("result")) == "1"
+
+
+def _build_gateway_candidates(
+    base_url: str,
+    cache_file: str,
+    auto_discover_gateway: bool,
+    probe_url: str,
+    timeout: int,
+) -> list[str]:
+    candidates = [_normalize_base_url(base_url)]
+    cached = load_cached_gateway(cache_file)
+    discovered = discover_gateway_base_url(probe_url, timeout=timeout) if auto_discover_gateway else None
+    for candidate in (cached, discovered):
+        if candidate:
+            normalized = _normalize_base_url(candidate)
+            if normalized not in candidates:
+                candidates.append(normalized)
+    return candidates
+
+
+def ensure_online_with_fallback(
+    base_url: str,
+    username: str,
+    password: str,
+    service: str = "",
+    timeout: int = 10,
+    cache_file: str = DEFAULT_GATEWAY_CACHE_FILE,
+    auto_discover_gateway: bool = True,
+    probe_url: str = DEFAULT_PROBE_URL,
+) -> dict[str, Any]:
+    candidates = _build_gateway_candidates(base_url, cache_file, auto_discover_gateway, probe_url, timeout)
+    errors: list[str] = []
+
+    for candidate in candidates:
+        client = DrcomClient(candidate, timeout=timeout)
+        try:
+            result = ensure_online(client, username, password, service)
+        except Exception as exc:
+            errors.append(f"{candidate}: {exc}")
+            continue
+
+        if _login_succeeded(result):
+            result["base_url"] = candidate
+            result["attempted_base_urls"] = candidates
+            save_cached_gateway(cache_file, candidate)
+            return result
+
+        login = result.get("login", {})
+        errors.append(f"{candidate}: login result={login.get('result')} msg={login.get('msg', '')}")
+
+    error_text = "; ".join(errors) if errors else "all gateway attempts failed"
+    raise RuntimeError(error_text)
+
+
 def _log(message: str) -> None:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{now}] {message}", flush=True)
@@ -165,6 +317,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--interval", type=int, default=int(os.getenv("CAMPUS_INTERVAL", "60")))
     parser.add_argument("--timeout", type=int, default=int(os.getenv("CAMPUS_TIMEOUT", "10")))
+    parser.add_argument(
+        "--probe-url",
+        default=os.getenv("CAMPUS_PROBE_URL", DEFAULT_PROBE_URL),
+        help="URL used for portal detection when gateway changes",
+    )
+    parser.add_argument(
+        "--gateway-cache-file",
+        default=os.getenv("CAMPUS_GATEWAY_CACHE_FILE", DEFAULT_GATEWAY_CACHE_FILE),
+        help="cache file for last successful gateway base URL",
+    )
+    parser.add_argument(
+        "--no-auto-discover-gateway",
+        action="store_true",
+        help="disable gateway discovery fallback",
+    )
     parser.add_argument("--once", action="store_true", help="check once and exit")
     return parser
 
@@ -183,16 +350,35 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    client = DrcomClient(args.base_url, timeout=args.timeout)
     while True:
         try:
-            result = ensure_online(client, args.username, args.password, args.service)
+            result = ensure_online_with_fallback(
+                base_url=args.base_url,
+                username=args.username,
+                password=args.password,
+                service=args.service,
+                timeout=args.timeout,
+                cache_file=args.gateway_cache_file,
+                auto_discover_gateway=not args.no_auto_discover_gateway,
+                probe_url=args.probe_url,
+            )
+            gateway = result.get("base_url", args.base_url)
             if result["action"] == "already_online":
                 status = result["status"]
-                _log(f"online uid={status.get('uid', '')} ip={status.get('v46ip') or status.get('v4ip', '')}")
+                _log(
+                    "online "
+                    f"uid={status.get('uid', '')} "
+                    f"ip={status.get('v46ip') or status.get('v4ip', '')} "
+                    f"gateway={gateway}"
+                )
             else:
                 login_result = result["login"]
-                _log(f"login attempted result={login_result.get('result')} msg={login_result.get('msg', '')}")
+                _log(
+                    "login attempted "
+                    f"result={login_result.get('result')} "
+                    f"msg={login_result.get('msg', '')} "
+                    f"gateway={gateway}"
+                )
         except Exception as exc:
             _log(f"error: {exc}")
             if args.once:

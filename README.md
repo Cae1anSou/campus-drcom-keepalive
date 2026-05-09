@@ -12,10 +12,14 @@
 http://10.1.60.100
 ```
 
+如果网关发生变化，脚本也会自动尝试探测当前网关并回退到可用地址。
+
 ## 功能
 
 - 自动检测 Dr.COM 校园网登录状态
 - 掉线后自动重新登录
+- 支持网关自动探测和网关回退
+- 自动缓存最近一次可用网关
 - 支持普通校园用户、电信、联通等账号后缀
 - 支持环境变量、`.env` 文件和命令行参数
 - 无第三方依赖，只需要 Python 3
@@ -53,10 +57,11 @@ terminal_type=1
 
 脚本不会主动注销，也不会在已经在线时重复登录。运行流程是：
 
-1. 调用 `/drcom/chkstatus` 查询状态。
-2. 如果 `result=1` 且账号匹配，认为当前在线。
-3. 如果离线，调用 `/drcom/login` 重新登录。
-4. 按配置间隔继续下一轮检测。
+1. 先尝试 `CAMPUS_BASE_URL` 的 `/drcom/chkstatus` 和 `/drcom/login`。
+2. 如果失败，读取网关缓存并重试。
+3. 如果仍失败，访问 `CAMPUS_PROBE_URL` 自动探测当前网关并重试。
+4. 成功后缓存这次可用网关，后续优先复用。
+5. 按配置间隔继续下一轮检测。
 
 ## 快速开始
 
@@ -80,6 +85,8 @@ CAMPUS_USERNAME=<你的学号或账号>
 CAMPUS_PASSWORD=<你的密码>
 CAMPUS_SERVICE=
 CAMPUS_INTERVAL=60
+CAMPUS_PROBE_URL=http://example.com/
+CAMPUS_GATEWAY_CACHE_FILE=.campus_gateway_cache
 ```
 
 运行一次检测：
@@ -99,6 +106,8 @@ python3 campus_keepalive.py
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `CAMPUS_BASE_URL` | `http://10.1.60.100` | 校园网认证网关地址 |
+| `CAMPUS_PROBE_URL` | `http://example.com/` | 自动探测网关时访问的探测地址 |
+| `CAMPUS_GATEWAY_CACHE_FILE` | `.campus_gateway_cache` | 最近一次可用网关缓存文件 |
 | `CAMPUS_USERNAME` | 空 | 校园网账号 |
 | `CAMPUS_PASSWORD` | 空 | 校园网密码 |
 | `CAMPUS_SERVICE` | 空 | 运营商后缀，普通校园用户留空 |
@@ -129,6 +138,12 @@ python3 campus_keepalive.py \
 
 ```bash
 python3 campus_keepalive.py --env-file /etc/campus-keepalive.env
+```
+
+禁用网关自动探测（只使用你给定的网关）：
+
+```bash
+python3 campus_keepalive.py --no-auto-discover-gateway
 ```
 
 只检测一次：
@@ -206,7 +221,9 @@ Error code: 203 Bad request(2)
 - 当前设备仍连接在校园网内，而不是切到了其他网络
 - `.env` 中的账号和密码正确
 - `CAMPUS_SERVICE` 是否需要填写 `@dx` 或 `@lt`
-- 网关地址是否仍是 `http://10.1.60.100`
+- 你手动指定的 `CAMPUS_BASE_URL` 是否有效
+
+如果校园网网关经常变化，建议保留默认的自动探测逻辑，不要启用 `--no-auto-discover-gateway`。
 
 ## 安全说明
 
