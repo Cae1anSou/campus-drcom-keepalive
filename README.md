@@ -67,6 +67,10 @@ terminal_type=1
 如果设置了 `CAMPUS_SOURCE_IP` 或 `CAMPUS_INTERFACE`，脚本会让所有 HTTP 请求都从
 指定地址发出。这适合有线和 Wi-Fi 需要分别认证的场景。
 
+对于双网卡场景，建议同时开启 `CAMPUS_ENSURE_POLICY_ROUTING=true`。脚本会按网卡
+自动维护 source-based policy routing，尽量避免“源 IP 绑定到了网卡 A，但回包走了网卡 B”
+导致的 `No route to host`。
+
 ## 快速开始
 
 克隆仓库后进入目录：
@@ -93,6 +97,9 @@ CAMPUS_PROBE_URL=http://example.com/
 CAMPUS_GATEWAY_CACHE_FILE=.campus_gateway_cache
 CAMPUS_SOURCE_IP=
 CAMPUS_INTERFACE=
+CAMPUS_ENSURE_POLICY_ROUTING=false
+CAMPUS_POLICY_ROUTE_TABLE=
+CAMPUS_POLICY_RULE_PRIORITY=
 ```
 
 运行一次检测：
@@ -116,6 +123,9 @@ python3 campus_keepalive.py
 | `CAMPUS_GATEWAY_CACHE_FILE` | `.campus_gateway_cache` | 最近一次可用网关缓存文件 |
 | `CAMPUS_SOURCE_IP` | 空 | 绑定请求使用的本机 IPv4 地址 |
 | `CAMPUS_INTERFACE` | 空 | 绑定请求使用的网卡名，例如 `enp7s0` |
+| `CAMPUS_ENSURE_POLICY_ROUTING` | `false` | 是否自动维护 source-based policy routing（建议双网卡时开启） |
+| `CAMPUS_POLICY_ROUTE_TABLE` | 空 | 可选，指定策略路由 table ID |
+| `CAMPUS_POLICY_RULE_PRIORITY` | 空 | 可选，指定策略路由 rule priority |
 | `CAMPUS_USERNAME` | 空 | 校园网账号 |
 | `CAMPUS_PASSWORD` | 空 | 校园网密码 |
 | `CAMPUS_SERVICE` | 空 | 运营商后缀，普通校园用户留空 |
@@ -162,6 +172,22 @@ python3 campus_keepalive.py --interface wlp0s20f3 --once
 ```
 
 `--source-ip` 更利于跨平台；`--interface` 当前依赖 Linux 的 `ip` 命令。
+
+双网卡建议打开策略路由维护：
+
+```bash
+python3 campus_keepalive.py --interface enp7s0 --ensure-policy-routing
+```
+
+如果你希望固定 table 和 priority：
+
+```bash
+python3 campus_keepalive.py \
+  --interface enp7s0 \
+  --ensure-policy-routing \
+  --policy-route-table 103 \
+  --policy-rule-priority 100
+```
 
 禁用网关自动探测（只使用你给定的网关）：
 
@@ -226,11 +252,13 @@ sudo journalctl -u 'campus-keepalive@*.service' -f
 ```dotenv
 # /etc/campus-keepalive-enp7s0.env
 CAMPUS_BASE_URL=http://10.99.253.230
+CAMPUS_ENSURE_POLICY_ROUTING=true
 ```
 
 ```dotenv
 # /etc/campus-keepalive-wlp0s20f3.env
 CAMPUS_BASE_URL=http://10.1.60.100
+CAMPUS_ENSURE_POLICY_ROUTING=true
 ```
 
 ## 跨平台计划

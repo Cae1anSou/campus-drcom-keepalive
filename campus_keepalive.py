@@ -79,6 +79,25 @@ def _callback() -> str:
     return f"dr{random.randint(1000, 9999)}"
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return True
+    if normalized in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+def _env_optional_int(name: str) -> int | None:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    return int(value)
+
+
 class SourceBoundHTTPConnection(http.client.HTTPConnection):
     def __init__(self, *args: Any, source_ip: str, **kwargs: Any) -> None:
         super().__init__(*args, source_address=(source_ip, 0), **kwargs)
@@ -126,17 +145,153 @@ def build_source_bound_opener(source_ip: str) -> Any:
     return build_opener(SourceBoundHTTPHandler(source_ip), SourceBoundHTTPSHandler(source_ip))
 
 
-def interface_ipv4_address(interface: str) -> str:
+def interface_ipv4_info(interface: str) -> tuple[str, int]:
     command = ["ip", "-4", "-o", "addr", "show", "dev", interface]
     try:
         output = subprocess.check_output(command, text=True, stderr=subprocess.DEVNULL)
     except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-        raise RuntimeError(f"cannot resolve IPv4 address for interface {interface!r}") from exc
+        raise RuntimeError(f"cannot resolve IPv4 info for interface {interface!r}") from exc
 
-    match = re.search(r"\binet\s+([0-9]{1,3}(?:\.[0-9]{1,3}){3})/", output)
+    match = re.search(r"\binet\s+([0-9]{1,3}(?:\.[0-9]{1,3}){3})/([0-9]{1,2})", output)
     if not match:
         raise RuntimeError(f"interface {interface!r} has no IPv4 address")
+    return match.group(1), int(match.group(2))
+
+
+def interface_ipv4_address(interface: str) -> str:
+    ip, _prefix = interface_ipv4_info(interface)
+    return ip
+
+
+def interface_default_gateway(interface: str) -> str | None:
+    command = ["ip", "-4", "route", "show", "default", "dev", interface]
+    try:
+        output = subprocess.check_output(command, text=True, stderr=subprocess.DEVNULL).strip()
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(f"cannot resolve default gateway for interface {interface!r}") from exc
+    if not output:
+        return None
+    match = re.search(r"\bvia\s+([0-9]{1,3}(?:\.[0-9]{1,3}){3})\b", output)
+    if not match:
+        return None
     return match.group(1)
+
+
+def interface_index(interface: str) -> int:
+    command = ["ip", "-o", "link", "show", "dev", interface]
+    try:
+        output = subprocess.check_output(command, text=True, stderr=subprocess.DEVNULL)
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(f"cannot resolve interface index for {interface!r}") from exc
+    match = re.match(r"\s*([0-9]+):", output)
+    if not match:
+        raise RuntimeError(f"unexpected link output for interface {interface!r}")
+    return int(match.group(1))
+
+
+def ensure_interface_policy_routing(
+    interface: str,
+    source_ip: str,
+    table_id: int | None = None,
+    rule_priority: int | None = None,
+) -> dict[str, Any]:
+    iface_ip, prefix = interface_ipv4_info(interface)
+    network = ipaddress.ip_interface(f"{iface_ip}/{prefix}").network
+    gateway = interface_default_gateway(interface)
+
+    if table_id is None or rule_priority is None:
+        index = interface_index(interface)
+        if table_id is None:
+            table_id = 30000 + index
+        if rule_priority is None:
+            rule_priority = 15000 + index
+
+    route_commands = [
+        [
+            "ip",
+            "-4",
+            "route",
+            "replace",
+            str(network),
+            "dev",
+            interface,
+            "src",
+            source_ip,
+            "table",
+            str(table_id),
+        ]
+    ]
+    if gateway:
+        route_commands.append(
+            [
+                "ip",
+                "-4",
+                "route",
+                "replace",
+                "default",
+                "via",
+                gateway,
+                "dev",
+                interface,
+                "table",
+                str(table_id),
+            ]
+        )
+    else:
+        route_commands.append(
+            [
+                "ip",
+                "-4",
+                "route",
+                "replace",
+                "default",
+                "dev",
+                interface,
+                "table",
+                str(table_id),
+            ]
+        )
+
+    for command in route_commands:
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    subprocess.run(
+        ["ip", "-4", "rule", "del", "pref", str(rule_priority)],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        [
+            "ip",
+            "-4",
+            "rule",
+            "add",
+            "pref",
+            str(rule_priority),
+            "from",
+            f"{source_ip}/32",
+            "table",
+            str(table_id),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["ip", "-4", "route", "flush", "cache"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return {
+        "interface": interface,
+        "source_ip": source_ip,
+        "table_id": table_id,
+        "rule_priority": rule_priority,
+        "gateway": gateway or "",
+        "network": str(network),
+    }
 
 
 def resolve_source_ip(source_ip: str | None = None, interface: str | None = None) -> str | None:
@@ -382,6 +537,7 @@ def _log(message: str) -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    default_ensure_policy_routing = _env_bool("CAMPUS_ENSURE_POLICY_ROUTING", False)
     parser = argparse.ArgumentParser(description="Dr.COM campus network auto connect and keepalive")
     parser.add_argument("--env-file", default=os.getenv("CAMPUS_ENV_FILE", ".env"))
     parser.add_argument("--base-url", default=os.getenv("CAMPUS_BASE_URL", DEFAULT_BASE_URL))
@@ -414,6 +570,31 @@ def _build_parser() -> argparse.ArgumentParser:
         default=os.getenv("CAMPUS_INTERFACE"),
         help="bind HTTP requests to this network interface by using its IPv4 address",
     )
+    parser.set_defaults(ensure_policy_routing=default_ensure_policy_routing)
+    parser.add_argument(
+        "--ensure-policy-routing",
+        action="store_true",
+        dest="ensure_policy_routing",
+        help="ensure source-based policy routing for --interface on Linux",
+    )
+    parser.add_argument(
+        "--no-ensure-policy-routing",
+        action="store_false",
+        dest="ensure_policy_routing",
+        help="do not modify policy routing rules even when --interface is set",
+    )
+    parser.add_argument(
+        "--policy-route-table",
+        type=int,
+        default=_env_optional_int("CAMPUS_POLICY_ROUTE_TABLE"),
+        help="custom routing table ID used with --ensure-policy-routing",
+    )
+    parser.add_argument(
+        "--policy-rule-priority",
+        type=int,
+        default=_env_optional_int("CAMPUS_POLICY_RULE_PRIORITY"),
+        help="custom policy rule priority used with --ensure-policy-routing",
+    )
     parser.add_argument(
         "--no-auto-discover-gateway",
         action="store_true",
@@ -437,13 +618,43 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     try:
-        source_ip = resolve_source_ip(args.source_ip, args.interface)
+        resolve_source_ip(args.source_ip, args.interface)
     except Exception as exc:
         print(f"invalid network binding: {exc}", file=sys.stderr)
         return 2
 
+    last_policy_signature: tuple[Any, ...] | None = None
+
     while True:
         try:
+            source_ip = resolve_source_ip(args.source_ip, args.interface)
+            if args.ensure_policy_routing and args.interface and source_ip:
+                policy_state = ensure_interface_policy_routing(
+                    interface=args.interface,
+                    source_ip=source_ip,
+                    table_id=args.policy_route_table,
+                    rule_priority=args.policy_rule_priority,
+                )
+                policy_signature = (
+                    policy_state["interface"],
+                    policy_state["source_ip"],
+                    policy_state["table_id"],
+                    policy_state["rule_priority"],
+                    policy_state["gateway"],
+                    policy_state["network"],
+                )
+                if policy_signature != last_policy_signature:
+                    _log(
+                        "policy routing "
+                        f"interface={policy_state['interface']} "
+                        f"source={policy_state['source_ip']} "
+                        f"table={policy_state['table_id']} "
+                        f"priority={policy_state['rule_priority']} "
+                        f"gateway={policy_state['gateway']} "
+                        f"network={policy_state['network']}"
+                    )
+                    last_policy_signature = policy_signature
+
             result = ensure_online_with_fallback(
                 base_url=args.base_url,
                 username=args.username,

@@ -278,6 +278,74 @@ class CampusKeepaliveTests(unittest.TestCase):
                 else:
                     os.environ[key] = old_value
 
+    def test_interface_ipv4_info_parses_ip_and_prefix(self):
+        with mock.patch.object(
+            ck.subprocess,
+            "check_output",
+            return_value="2: enp7s0    inet 10.3.20.57/24 brd 10.3.20.255 scope global dynamic noprefixroute enp7s0\n",
+        ):
+            ip, prefix = ck.interface_ipv4_info("enp7s0")
+        self.assertEqual(ip, "10.3.20.57")
+        self.assertEqual(prefix, 24)
+
+    def test_ensure_interface_policy_routing_applies_expected_commands(self):
+        with mock.patch.object(
+            ck,
+            "interface_ipv4_info",
+            return_value=("10.3.20.57", 24),
+        ), mock.patch.object(
+            ck,
+            "interface_default_gateway",
+            return_value="10.3.20.1",
+        ), mock.patch.object(
+            ck.subprocess,
+            "run",
+        ) as run_mock:
+            run_mock.return_value = mock.Mock(returncode=0)
+            state = ck.ensure_interface_policy_routing(
+                interface="enp7s0",
+                source_ip="10.3.20.57",
+                table_id=103,
+                rule_priority=100,
+            )
+
+        commands = [call.args[0] for call in run_mock.call_args_list]
+        self.assertIn(
+            ["ip", "-4", "route", "replace", "10.3.20.0/24", "dev", "enp7s0", "src", "10.3.20.57", "table", "103"],
+            commands,
+        )
+        self.assertIn(
+            ["ip", "-4", "route", "replace", "default", "via", "10.3.20.1", "dev", "enp7s0", "table", "103"],
+            commands,
+        )
+        self.assertIn(
+            ["ip", "-4", "rule", "add", "pref", "100", "from", "10.3.20.57/32", "table", "103"],
+            commands,
+        )
+        self.assertEqual(state["network"], "10.3.20.0/24")
+        self.assertEqual(state["gateway"], "10.3.20.1")
+
+    def test_parser_accepts_policy_routing_env_overrides(self):
+        old_values = {
+            "CAMPUS_ENSURE_POLICY_ROUTING": os.environ.get("CAMPUS_ENSURE_POLICY_ROUTING"),
+            "CAMPUS_POLICY_ROUTE_TABLE": os.environ.get("CAMPUS_POLICY_ROUTE_TABLE"),
+            "CAMPUS_POLICY_RULE_PRIORITY": os.environ.get("CAMPUS_POLICY_RULE_PRIORITY"),
+        }
+        try:
+            os.environ["CAMPUS_ENSURE_POLICY_ROUTING"] = "true"
+            os.environ["CAMPUS_POLICY_ROUTE_TABLE"] = "103"
+            os.environ["CAMPUS_POLICY_RULE_PRIORITY"] = "100"
+            args = ck._build_parser().parse_args([])
+            self.assertTrue(args.ensure_policy_routing)
+            self.assertEqual(args.policy_route_table, 103)
+            self.assertEqual(args.policy_rule_priority, 100)
+        finally:
+            for key, old_value in old_values.items():
+                if old_value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = old_value
+
 
 if __name__ == "__main__":
     unittest.main()
