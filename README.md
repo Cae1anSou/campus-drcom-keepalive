@@ -217,7 +217,21 @@ sudo systemctl enable --now campus-keepalive@wlp0s20f3.service
 sudo journalctl -u 'campus-keepalive@*.service' -f
 ```
 
-模板服务会按网卡名分别写网关缓存，避免两条链路互相覆盖缓存。
+模板服务会读取 `/etc/campus-keepalive.env`，并额外读取
+`/etc/campus-keepalive-<网卡名>.env` 作为覆盖配置；同时按网卡名分别写网关缓存，
+避免两条链路互相覆盖缓存。
+
+例如有线和 Wi-Fi 使用不同入口时：
+
+```dotenv
+# /etc/campus-keepalive-enp7s0.env
+CAMPUS_BASE_URL=http://10.99.253.230
+```
+
+```dotenv
+# /etc/campus-keepalive-wlp0s20f3.env
+CAMPUS_BASE_URL=http://10.1.60.100
+```
 
 ## 跨平台计划
 

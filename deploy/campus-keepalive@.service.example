@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/campus-keepalive.env
+EnvironmentFile=-/etc/campus-keepalive-%i.env
 WorkingDirectory=/path/to/campus-drcom-keepalive
 ExecStart=/usr/bin/python3 /path/to/campus-drcom-keepalive/campus_keepalive.py --env-file /etc/campus-keepalive.env --interface %i --gateway-cache-file /var/lib/campus-keepalive/%i.gateway
 Restart=always
